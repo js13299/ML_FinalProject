@@ -1,0 +1,206 @@
+---
+title: "ML Project"
+author: "Jung Min Shon, Ilyas Saltani"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+rm(list=ls())
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tree)
+library(caret)
+library(randomForest)
+library(class)
+library(gtsummary)
+
+heart_data <- read_csv('heart.csv')
+
+#Checking to see if there is any missing values
+print(colSums(is.na(heart_data)))
+```
+
+Descriptive Statistics
+```{r}
+Descriptive <- heart_data %>%
+  tbl_summary(
+    statistic = list(all_categorical() ~ "{n} ({p}%)",
+                     all_continuous() ~ "{mean} ({sd})"),
+    digits = list(all_continuous()  ~ c(2, 2),
+                  all_categorical() ~ c(0, 1)),
+    missing = "no",
+    
+    type = list(Age ~ "continuous",
+                Sex ~ "categorical",
+                ChestPainType ~ "categorical",
+                RestingBP ~ "continuous",
+                Cholesterol ~ "continuous",
+                FastingBS ~ "categorical",
+                RestingECG ~ "categorical", 
+                MaxHR ~ "continuous",
+                ExerciseAngina ~ "categorical",
+                Oldpeak ~ "continuous",
+                ST_Slope ~ "categorical",
+                HeartDisease ~ "categorical")
+    
+  ) %>%  
+  modify_header(label = "**Variable**") %>%
+  modify_caption("Descriptive Statistics") %>%
+  bold_labels()
+
+Descriptive 
+```
+
+```{r}
+#Replacing any non-integer values
+heart_data$Sex <- ifelse(heart_data$Sex == "M", 1, 0)
+
+heart_data$ChestPainType <- factor(heart_data$ChestPainType, levels = c("TA", "ATA", "NAP", "ASY"))
+heart_data$ChestPainType <- as.integer(heart_data$ChestPainType) - 1
+
+heart_data$RestingECG <- factor(heart_data$RestingECG, levels = c("Normal", "ST", "LVH"))
+heart_data$RestingECG <- as.integer(heart_data$RestingECG) - 1
+
+heart_data$ExerciseAngina <- ifelse(heart_data$ExerciseAngina == "Y", 0, 1)
+
+heart_data$ST_Slope <- factor(heart_data$ST_Slope, levels = c("Up", "Flat", "Down"))
+heart_data$ST_Slope <- as.integer(heart_data$ST_Slope) - 1
+
+#Making heart disease as factor
+heart_data$HeartDisease <- factor(heart_data$HeartDisease, levels = c(0, 1))
+```
+
+```{r}
+#80% training set, 20% test set
+
+set.seed(123)
+train_index <- sample(1:nrow(heart_data), size = floor(0.8 * nrow(heart_data)))
+
+heart_train <- heart_data[train_index, ]
+heart_test <- heart_data[-train_index, ]
+
+cat("Train set size:", nrow(heart_train), "samples\n")
+cat("Test set size:", nrow(heart_test), "samples\n")
+```
+
+# Logistic Regression Model
+```{r}
+# Logistic regression model
+LR_Model <- glm(HeartDisease ~ ., data = heart_train, family = 'binomial')
+
+summary(LR_Model)
+
+# Training Error
+train_error <- predict(LR_Model, type = "response")
+
+## Convert predicted probabilities to class labels
+pred_train_error <- ifelse(train_error > 0.5, 1, 0)
+table(pred_train_error, heart_train$HeartDisease)
+
+train_error_lr <- mean(pred_train_error != heart_train$HeartDisease)
+
+#Test error
+test_error <- predict(LR_Model, heart_test, type = "response")
+
+pred_test_error <- ifelse(test_error > 0.5, 1, 0)
+table(pred_test_error, heart_test$HeartDisease)
+
+test_error_lr <- mean(pred_test_error != heart_test$HeartDisease)
+```
+
+# Decision tree model
+```{r}
+DT_Model <- tree(HeartDisease ~ ., data = heart_train, split = "gini")
+set.seed(0)
+
+## Cross-validation to predict Heart Disease
+cv.DT <- cv.tree(DT_Model)
+cv.DT_df <- data.frame(size = cv.DT$size, deviance = cv.DT$dev)
+best_size <- cv.DT$size[which.min(cv.DT$dev)]
+ggplot(cv.DT_df, mapping = aes(x = size, y = deviance)) + 
+  geom_point(size = 3) + 
+  geom_line() +
+  geom_vline(xintercept = best_size, col = "red")
+
+## optimal tree size
+cat('CV leads to the optimal tree size as ', best_size,'\n')
+
+## Visualizing the pruned regression tree
+DT_Model_prune <- prune.tree(DT_Model, best = best_size)
+plot(DT_Model_prune)
+text(DT_Model_prune) 
+
+## Compute the training error
+pred_heart_train <- predict(DT_Model_prune, newdata = heart_train, type = "class")
+train_error_dt <- mean(pred_heart_train != heart_train$HeartDisease)
+
+## Compute the test error
+pred_heart_test <- predict(DT_Model_prune, newdata = heart_test, type = "class")
+test_error_dt <- mean(pred_heart_test != heart_test$HeartDisease)
+
+```
+
+# Random Forest
+```{r}
+#Using default number of tree = 500
+set.seed(1)
+RF_Model <- randomForest(HeartDisease ~ ., 
+                        data = heart_train, 
+                        importance = TRUE)
+RF_Model
+
+#Train error
+train.rf <- predict(RF_Model, newdata = heart_train)
+train_error_rf <- mean(train.rf != heart_train$HeartDisease)
+#Test error
+test.rf <- predict(RF_Model, newdata = heart_test)
+test_error_rf <- mean(test.rf != heart_test$HeartDisease)
+
+#Variable importance plot
+importance(RF_Model)
+varImpPlot(RF_Model)
+```
+
+
+# Bagging
+```{r}
+#Using default number of tree = 500
+set.seed(1)
+Bg_Model <- randomForest(HeartDisease ~ ., 
+                        data = heart_train, 
+                        mtry = 11,
+                        importance = TRUE)
+Bg_Model
+
+#Train error
+train.bg <- predict(Bg_Model, newdata = heart_train)
+train_error_bg <- mean(train.bg != heart_train$HeartDisease)
+#Test error
+test.bg <- predict(Bg_Model, newdata = heart_test)
+test_error_bg <- mean(test.bg != heart_test$HeartDisease)
+
+#Variable importance plot
+importance(Bg_Model)
+varImpPlot(Bg_Model)
+```
+
+# Result
+```{r}
+results <- data.frame(
+  Model = c("Logistic Regression", "Decision Tree", 
+            "Random Forest", "Bagging"),
+  Training_Error = c(train_error_lr, train_error_dt, 
+                     train_error_rf, train_error_bg),
+  Test_Error = c(test_error_lr, test_error_dt, 
+                 test_error_rf, test_error_bg))
+
+print(results)
+```
+
+
